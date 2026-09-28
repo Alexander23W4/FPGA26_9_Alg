@@ -3,6 +3,14 @@
 typedef ap_uint<8> ap8_t;
 
 ap_uint<8> denoise_pixel(ap_uint<8> pixel, ap_uint<8> prev);
+void denoise(
+    ap8_t in_data,
+    int in_valid,
+    int in_last,
+    ap8_t* out_data,
+    int* out_last,
+    int* out_valid
+);
 
 typedef struct{
     int pixels[515];

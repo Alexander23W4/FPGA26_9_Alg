@@ -8,14 +8,11 @@
 #define NEIGHBOR_WEIGHT 2
 #define SELF_WEIGHT 4
 
-// 3x3 Gaussian kernel
-//      1 2 1
-//      2 4 2
-//      1 2 1
-//
-// 最后除以 16
+
 
 /*
+只有中间254x254的像素进行3x3的kernel处理, 周围一圈的像素不处理
+
 存下来之前的515个有效像素, 输出延迟为257(读到第i个输出, 输出第i-257个像素的处理值)
 存储介质用队列
 typedef struct{
@@ -36,6 +33,11 @@ i = 257开始, 开始输出:
 i-514  i-513  i-512
 i-258  i-257  i-256
 i-2    i-1    i
+
+3x3 Gaussian kernel
+     1 2 1
+     2 4 2
+     1 2 1
 */
 
 /*
@@ -46,13 +48,14 @@ int op_idx = 0;
 int first_frame = 1;
 
 int q[515] = { 0 };
+int rear_frame[257] = { 0 }; // 65279-65535
 
 void denoise(
     ap8_t in_data,
     int in_valid,
     int in_last,
 
-    ap8_t out_data,
+    ap8_t* out_data,
     int* out_last,
     int* out_valid
 )
@@ -67,6 +70,9 @@ void denoise(
 // 有效output 实现逻辑
     if(in_valid){
         q[idx % 515] = in_data;
+        if(idx >= 65279){
+            rear_frame[idx - 65279] = in_data;  // 尾帧单独存储, 避免被覆盖
+        }
     }
 
 
@@ -83,9 +89,18 @@ void denoise(
         if(idx % 256 > 1){
             if(op_idx == idx - 257){
                 *out_valid = 1;
-                *out_data = q[(idx + 515 - 514) % 515] * CORNER_WEIGHT
-                        + q[(idx + 515 - 513) % 515] * NEIGHBOR_WEIGHT
-                        + ...
+                int sum =
+                      q[(idx + 515 - 514) % 515] * CORNER_WEIGHT
+                    + q[(idx + 515 - 513) % 515] * NEIGHBOR_WEIGHT
+                    + q[(idx + 515 - 512) % 515] * CORNER_WEIGHT
+                    + q[(idx + 515 - 258) % 515] * NEIGHBOR_WEIGHT
+                    + q[(idx + 515 - 257) % 515] * SELF_WEIGHT
+                    + q[(idx + 515 - 256) % 515] * NEIGHBOR_WEIGHT
+                    + q[(idx + 515 - 2) % 515] * CORNER_WEIGHT
+                    + q[(idx + 515 - 1) % 515] * NEIGHBOR_WEIGHT
+                    + q[idx % 515] * CORNER_WEIGHT;
+
+                *out_data = (ap8_t)(sum >> 4);
 
                 op_idx++;
             }
@@ -100,11 +115,12 @@ void denoise(
     else {
         if(!first_frame){
             if(op_idx <= 65535){   // op_idx 最终停到 65535
-                *out_valid = 1
-                *out_data = q[op_idx++ % 515];
-            }
-            if(op_idx == 65535){
-                *out_last = 1;
+                *out_valid = 1;
+                if(op_idx == 65535){
+                    *out_last = 1;
+                }
+                *out_data = rear_frame[op_idx - 65279];
+                op_idx++;
             }
         }
     }

@@ -41,17 +41,18 @@ void algo_top(hls::stream<axis8_t> &s_axis,
         int denoise_out_last;
         int denoise_out_valid;
 
-        denoise_out = denoise(denoise_in_data, denoise_in_valid, in.last, &denoise_out_last, &denoise_out_valid);
+        denoise(denoise_in_data, denoise_in_valid, in.last, &denoise_out, &denoise_out_last, &denoise_out_valid);
 
 
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
 
+        out.data = denoise_out;
         out.keep = denoise_out_valid;
         out.strb = denoise_out_valid;
         out.last = denoise_out_last;
         out.user = 0;   // 这个user我不知道axi_stream里面定义的是什么
         out.id   = 0;   // 同上
-        out.dest = ;    // 需要补充
+        out.dest = 0;
 
         m_axis.write(out);
     }
