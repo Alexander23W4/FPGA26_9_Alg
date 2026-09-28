@@ -1,9 +1,18 @@
 #include "algo_top.h"
 
-ap8_t denoise_pixel(ap8_t pixel, ap8_t prev)
+int frame_idx = 0;   // 0-65535
+
+ap8_t denoise_pixel(ap8_t pixel, int in_valid, int in_last, int* out_last, int* out_valid)
 {
-    ap_uint<9> sum = pixel + prev;
-    return sum >> 1;
+
+
+
+    // 流控:
+    if (in_last) {
+        frame_idx = 0;
+    } else {
+        frame_idx++;
+    }
 }
 
 

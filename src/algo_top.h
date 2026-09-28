@@ -26,6 +26,7 @@
 #define ALGO_IMG_W      256     // 一行 256 个像素
 #define ALGO_IMG_H      256     // 一帧 256 行
 #define ALGO_PIXEL_W    8       // 8bit 灰度
+#define IMG_IDX_MAX   ALGO_IMG_W * ALGO_IMG_H - 1
 
 // AXI4-Stream 载荷: 8bit 数据 + 1bit user
 typedef ap_axiu<ALGO_PIXEL_W, 1, 0, 0> axis8_t;
