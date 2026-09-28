@@ -8,7 +8,17 @@
 #define NEIGHBOR_WEIGHT 2
 #define SELF_WEIGHT 4
 
+// module denose(
+//     input clk, rst,
+//     input in_data, in_valid, in_last
+//     output in_ready,
 
+//     output out_data, out_valid, out_last,
+//     input out_ready
+
+// );
+
+// endmodule
 
 /*
 只有中间254x254的像素进行3x3的kernel处理, 周围一圈的像素不处理
@@ -61,6 +71,8 @@ void denoise(
     ap8_t in_data,
     int in_valid,
     int in_last,
+    int* in_ready,
+    int out_ready,
 
     ap8_t* out_data,
     int* out_last,
@@ -68,46 +80,48 @@ void denoise(
 )
 {
 
-// 先 状态量/寄存器 默认值  和  output默认值
+// 默认输入可接收, 输出无效。
+    *in_ready = 1;
     *out_last = 0;
     *out_valid = 0;
     *out_data = 0;
 
+    int has_output = 0;
+    int output_idx = op_idx;
+    int r514 = wr - 514; if(r514 < 0) r514 += 515;
+    int r513 = wr - 513; if(r513 < 0) r513 += 515;
+    int r512 = wr - 512; if(r512 < 0) r512 += 515;
+    int r258 = wr - 258; if(r258 < 0) r258 += 515;
+    int r257 = wr - 257; if(r257 < 0) r257 += 515;
+    int r256 = wr - 256; if(r256 < 0) r256 += 515;
+    int r2   = wr -   2; if(r2   < 0) r2   += 515;
+    int r1   = wr -   1; if(r1   < 0) r1   += 515;
 
-// 有效output 实现逻辑
-    if(in_valid){
-        q[wr] = in_data;                    // 原来是 q[idx % 515] = in_data;  (wr 恒等于 idx%515)
-
-        // ★ 写法优化(算法逻辑完全不变): 9 个抽头在 q 里的下标 = (wr - K) 回绕,
-        //   和原来的 (idx + 515 - K) % 515 完全等价, 但只是一次比较 + 一次加法。
-        //   (idx 恒 >= 0 且 K <= 514, 所以最多补一次 515 就够)
-        int r514 = wr - 514; if(r514 < 0) r514 += 515;
-        int r513 = wr - 513; if(r513 < 0) r513 += 515;
-        int r512 = wr - 512; if(r512 < 0) r512 += 515;
-        int r258 = wr - 258; if(r258 < 0) r258 += 515;
-        int r257 = wr - 257; if(r257 < 0) r257 += 515;
-        int r256 = wr - 256; if(r256 < 0) r256 += 515;
-        int r2   = wr -   2; if(r2   < 0) r2   += 515;
-        int r1   = wr -   1; if(r1   < 0) r1   += 515;
-
-        if(idx >= 65279){
-            rear_frame[idx - 65279] = in_data;  // 尾帧单独存储, 避免被覆盖
+    if(idx >= 257 && idx <= 513){
+        has_output = 1;
+        if(idx == 257){
+            output_idx = 0;
         }
+    }
+    else if(idx > 513 && idx <= 65535){
+        if((idx & 255) > 1 || op_idx == idx - 257){
+            has_output = 1;
+        }
+    }
+    else if(!first_frame && op_idx <= 65535){
+        has_output = 1;
+    }
 
-        if(idx >= 257 && idx <= 513){
-            if(idx == 257){
-                op_idx = 0; // 在这里同步一下, 开始新的一帧的输出
-            }
-
+    if(has_output){
+        *in_ready = out_ready;
+        if(in_valid){
             *out_valid = 1;
-            *out_data = q[op_idx++];   
-        }
-        else if(idx > 513 && idx <= 65535){
-            // ★ 写法优化: idx 恒 >= 0, 所以 idx % 256 等价于 idx & 255。
-            //   (原来 idx 是 int, 综合出来的是【有符号】取模 srem, 是最贵的一种)
-            if((idx & 255) > 1){
-                    *out_valid = 1;
-                    ap_uint<16> sum =      // ★ 写法优化: 9 项最大 16*255=4080, 16 位足够
+            if(idx >= 257 && idx <= 513){
+                *out_data = q[output_idx];
+            }
+            else if(idx > 513 && idx <= 65535){
+                if((idx & 255) > 1){
+                    ap_uint<16> sum =
                         q[r514] * CORNER_WEIGHT
                         + q[r513] * NEIGHBOR_WEIGHT
                         + q[r512] * CORNER_WEIGHT
@@ -116,52 +130,50 @@ void denoise(
                         + q[r256] * NEIGHBOR_WEIGHT
                         + q[r2]   * CORNER_WEIGHT
                         + q[r1]   * NEIGHBOR_WEIGHT
-                        + q[wr]   * CORNER_WEIGHT;
+                        + in_data * CORNER_WEIGHT;
 
                     *out_data = (ap8_t)(sum >> 4);
-
-                    op_idx++;
+                }
+                else{
+                    *out_data = q[r257];
+                }
             }
             else{
-                if(op_idx == idx - 257){
-                    *out_valid = 1;
-                    // ★ 写法优化: 此处必然 op_idx == idx-257,
-                    //   所以 op_idx % 515 == (idx-257) % 515 == r257, 不需要取模。
-                    *out_data = q[r257];
-                    op_idx++;
-                }
-            }
-        }
-        else {
-            if(!first_frame){
-                if(op_idx <= 65535){   // op_idx 最终停到 65535
-                    *out_valid = 1;
-                    if(op_idx == 65535){
-                        *out_last = 1;
-                    }
-                    *out_data = rear_frame[op_idx - 65279];
-                    op_idx++;
+                *out_data = rear_frame[output_idx - 65279];
+                if(output_idx == 65535){
+                    *out_last = 1;
                 }
             }
         }
     }
 
+    // 改变输入或输出状态前必须完成对应的 ready/valid 握手。
+    if(in_valid && *in_ready){
+        q[wr] = in_data;
+        if(idx >= 65279){
+            rear_frame[idx - 65279] = in_data;
+        }
 
+        if(has_output){
+            if(idx == 257){
+                op_idx = 1;
+            }
+            else{
+                op_idx++;
+            }
+        }
 
-
-// 状态更新
-
-
-    if(in_last) {
-        idx = 0;
-        wr = 0;                 // ★ 新增: 写指针与 idx 同步复位 (保持 wr == idx%515)
-        first_frame = 0;
-    }
-    if(!in_last && in_valid) {
-        idx++;
-        wr++;                   // ★ 新增: 写指针回绕推进 (替代 idx % 515)
-        if(wr == 515){
+        if(in_last){
+            idx = 0;
             wr = 0;
+            first_frame = 0;
+        }
+        else{
+            idx++;
+            wr++;
+            if(wr == 515){
+                wr = 0;
+            }
         }
     }
 

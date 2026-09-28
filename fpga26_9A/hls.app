@@ -4,6 +4,7 @@
     <file name="src/algo_top.cpp" sc="0" tb="false" cflags="" csimflags=""/>
     <file name="src/denosing.cpp" sc="0" tb="false" cflags="" csimflags=""/>
     <file name="src/contour_ext.cpp" sc="0" tb="false" cflags="" csimflags=""/>
+    <file name="tb/algo_tb.cpp" sc="0" tb="true" cflags="" csimflags=""/>
   </files>
   <solutions>
     <solution name="solution1" status="active"/>

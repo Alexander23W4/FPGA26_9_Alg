@@ -14,6 +14,19 @@ axis8_t
 ├── last   数据流最后一个标志
 ├── id     数据流 ID
 └── dest   目标地址/目标端口
+
+
+*/
+
+/*
+输入图像 256x256x8bit
+tdata: 8bit
+tvalid: 这一帧有效
+tlast: eol
+tuser: sof
+
+不管:
+tkeep tdest tid tstrb tready
 */
 
 
@@ -35,26 +48,28 @@ void algo_top(hls::stream<axis8_t> &s_axis,
 
 // denonise: 
         ap8_t denoise_in_data = in.data;
-        int denoise_in_valid = in.keep && in.strb;
+        int denoise_in_valid = in.keep;
 
         ap8_t denoise_out;
         int denoise_out_last;
         int denoise_out_valid;
+        int denoise_sof;
 
-        denoise(denoise_in_data, denoise_in_valid, in.last, &denoise_out, &denoise_out_last, &denoise_out_valid);
+        denoise(denoise_in_data, denoise_in_valid, in.last, in.user, &denoise_out, &denoise_out_last, &denoise_out_valid &denoise_frame_end);
 
 
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-
 
         out.data = denoise_out;
         out.keep = denoise_out_valid;
-        out.strb = denoise_out_valid;
+        out.strb = 0;
         out.last = denoise_out_last;
-        out.user = 0;   // 这个user我不知道axi_stream里面定义的是什么
-        // out.id   = 0;   // 同上
-        // out.dest = 0;
+        out.user = denoise_sof;   // 这个user我不知道axi_stream里面定义的是什么
+
 
         m_axis.write(out);
     }
 }
+
+
 
