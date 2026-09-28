@@ -73,57 +73,55 @@ void denoise(
         if(idx >= 65279){
             rear_frame[idx - 65279] = in_data;  // 尾帧单独存储, 避免被覆盖
         }
-    }
 
+        if(idx >= 257 && idx <= 513){
+            if(idx == 257){
+                op_idx = 0; // 在这里同步一下, 开始新的一帧的输出
+            }
 
-    if(idx >= 257 && idx <= 513){
-        if(idx == 257){
-            op_idx = 0; // 在这里同步一下, 开始新的一帧的输出
-        }
-        if(op_idx == idx - 257){
             *out_valid = 1;
             *out_data = q[op_idx++];   
         }
-    }
-    else if(idx > 513 && idx <= 65535){
-        if(idx % 256 > 1){
-            if(op_idx == idx - 257){
-                *out_valid = 1;
-                int sum =
-                      q[(idx + 515 - 514) % 515] * CORNER_WEIGHT
-                    + q[(idx + 515 - 513) % 515] * NEIGHBOR_WEIGHT
-                    + q[(idx + 515 - 512) % 515] * CORNER_WEIGHT
-                    + q[(idx + 515 - 258) % 515] * NEIGHBOR_WEIGHT
-                    + q[(idx + 515 - 257) % 515] * SELF_WEIGHT
-                    + q[(idx + 515 - 256) % 515] * NEIGHBOR_WEIGHT
-                    + q[(idx + 515 - 2) % 515] * CORNER_WEIGHT
-                    + q[(idx + 515 - 1) % 515] * NEIGHBOR_WEIGHT
-                    + q[idx % 515] * CORNER_WEIGHT;
+        else if(idx > 513 && idx <= 65535){
+            if(idx % 256 > 1){
+                    *out_valid = 1;
+                    int sum =
+                        q[(idx + 515 - 514) % 515] * CORNER_WEIGHT
+                        + q[(idx + 515 - 513) % 515] * NEIGHBOR_WEIGHT
+                        + q[(idx + 515 - 512) % 515] * CORNER_WEIGHT
+                        + q[(idx + 515 - 258) % 515] * NEIGHBOR_WEIGHT
+                        + q[(idx + 515 - 257) % 515] * SELF_WEIGHT
+                        + q[(idx + 515 - 256) % 515] * NEIGHBOR_WEIGHT
+                        + q[(idx + 515 - 2) % 515] * CORNER_WEIGHT
+                        + q[(idx + 515 - 1) % 515] * NEIGHBOR_WEIGHT
+                        + q[idx % 515] * CORNER_WEIGHT;
 
-                *out_data = (ap8_t)(sum >> 4);
+                    *out_data = (ap8_t)(sum >> 4);
 
-                op_idx++;
+                    op_idx++;
             }
-        }
-        else{
-            if(op_idx == idx - 257){
-                *out_valid = 1;
-                *out_data = q[op_idx++ % 515];
-            }
-        }
-    }
-    else {
-        if(!first_frame){
-            if(op_idx <= 65535){   // op_idx 最终停到 65535
-                *out_valid = 1;
-                if(op_idx == 65535){
-                    *out_last = 1;
+            else{
+                if(op_idx == idx - 257){
+                    *out_valid = 1;
+                    *out_data = q[op_idx++ % 515];
                 }
-                *out_data = rear_frame[op_idx - 65279];
-                op_idx++;
+            }
+        }
+        else {
+            if(!first_frame){
+                if(op_idx <= 65535){   // op_idx 最终停到 65535
+                    *out_valid = 1;
+                    if(op_idx == 65535){
+                        *out_last = 1;
+                    }
+                    *out_data = rear_frame[op_idx - 65279];
+                    op_idx++;
+                }
             }
         }
     }
+
+
 
 
 // 状态更新
