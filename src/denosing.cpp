@@ -1,10 +1,12 @@
 #include "algo_top.h"
 
-int frame_idx = 0;
-
 // 256x256 图像
 #define IMG_W 256
 #define IMG_H 256
+
+#define CORNER_WEIGHT 1
+#define NEIGHBOR_WEIGHT 2
+#define SELF_WEIGHT 4
 
 // 3x3 Gaussian kernel
 //      1 2 1
@@ -13,127 +15,111 @@ int frame_idx = 0;
 //
 // 最后除以 16
 
-ap8_t denoise(
-    ap8_t pixel,
+/*
+存下来之前的515个有效像素, 输出延迟为257(读到第i个输出, 输出第i-257个像素的处理值)
+存储介质用队列
+typedef struct{
+    int pixels[515];
+    int last;
+    int head;
+}denoise_queue;
+
+i = 257开始, 开始输出:
+
+如果 i = 257-513, 直接输出 i - 257
+
+只有 i > 511(不是前两行) && i % 256 > 1 (不是前两列) 时, 进行Gauss kernel去噪处理 
+当 513 < i <= 65535 且 不属于上一行的情况时, 直接输出i-257
+
+当 收到 in_last之后, 从65279开始, 每一拍输出一帧(从队列里面取)
+
+i-514  i-513  i-512
+i-258  i-257  i-256
+i-2    i-1    i
+*/
+
+/*
+全程用 idx 和 op_idx 进行流控, 流缓存对象是q
+*/
+int idx = 0;
+int op_idx = 0;
+int first_frame = 1;
+
+int q[515] = { 0 };
+
+void denoise(
+    ap8_t in_data,
     int in_valid,
     int in_last,
+
+    ap8_t out_data,
     int* out_last,
     int* out_valid
 )
 {
-// 先定义 流控 和 状态量/寄存器 默认值  和  output默认值
 
-    // 当前行的列位置
-    static int col = 0;
-    // 当前行号
-    static int row = 0;
-
-
-    // 行缓冲：
-    // linebuf[0][x] = 上一行
-    // linebuf[1][x] = 上两行
-    static ap8_t linebuf0[IMG_W];
-    static ap8_t linebuf1[IMG_W];
-
-    // 3x3 窗口
-    static ap8_t p00, p01, p02;
-    static ap8_t p10, p11, p12;
-    static ap8_t p20, p21, p22;
-
-    ap8_t result = 0;
-
+// 先 状态量/寄存器 默认值  和  output默认值
+    *out_last = 0;
     *out_valid = 0;
-    *out_last  = 0;
+    *out_data = 0;
 
-    if (!in_valid) {
-        return 0;
+
+// 有效output 实现逻辑
+    if(in_valid){
+        q[idx % 515] = in_data;
     }
 
-    /*
-     * 保存当前输入像素
-     *
-     * linebuf0[col]：上一行
-     * linebuf1[col]：上两行
-     */
-    ap8_t old1 = linebuf0[col];
-    ap8_t old2 = linebuf1[col];
 
-    linebuf1[col] = old1;
-    linebuf0[col] = pixel;
-
-    /*
-     * 窗口左移
-     */
-
-    p00 = p01;
-    p01 = p02;
-    p02 = old2;
-
-    p10 = p11;
-    p11 = p12;
-    p12 = old1;
-
-    p20 = p21;
-    p21 = p22;
-    p22 = pixel;
-
-    /*
-     * 当窗口真正形成以后再计算
-     *
-     * 当前像素位于：
-     *
-     * p22
-     *
-     * 所以至少需要：
-     * row >= 2
-     * col >= 2
-     */
-    if (row >= 2 && col >= 2) {
-
-        int sum =
-              p00
-            + 2 * p01
-            + p02
-            + 2 * p10
-            + 4 * p11
-            + 2 * p12
-            + p20
-            + 2 * p21
-            + p22;
-
-        result = (ap8_t)(sum >> 4);
-
-        *out_valid = 1;
-    }
-
-    /*
-     * 当前像素是否为这一帧最后一个像素
-     */
-    if (in_last) {
-        *out_last = 1;
-    }
-
-    /*
-     * 更新坐标
-     */
-    if (col == IMG_W - 1) {
-        col = 0;
-
-        if (row == IMG_H - 1) {
-            row = 0;
-
-            // 新的一帧
-            // 清空窗口
-            p00 = p01 = p02 = 0;
-            p10 = p11 = p12 = 0;
-            p20 = p21 = p22 = 0;
-        } else {
-            row++;
+    if(idx >= 257 && idx <= 513){
+        if(idx == 257){
+            op_idx = 0; // 在这里同步一下, 开始新的一帧的输出
         }
-    } else {
-        col++;
+        if(op_idx == idx - 257){
+            *out_valid = 1;
+            *out_data = q[op_idx++];   
+        }
+    }
+    else if(idx > 513 && idx <= 65535){
+        if(idx % 256 > 1){
+            if(op_idx == idx - 257){
+                *out_valid = 1;
+                *out_data = q[(idx + 515 - 514) % 515] * CORNER_WEIGHT
+                        + q[(idx + 515 - 513) % 515] * NEIGHBOR_WEIGHT
+                        + ...
+
+                op_idx++;
+            }
+        }
+        else{
+            if(op_idx == idx - 257){
+                *out_valid = 1;
+                *out_data = q[op_idx++ % 515];
+            }
+        }
+    }
+    else {
+        if(!first_frame){
+            if(op_idx <= 65535){   // op_idx 最终停到 65535
+                *out_valid = 1
+                *out_data = q[op_idx++ % 515];
+            }
+            if(op_idx == 65535){
+                *out_last = 1;
+            }
+        }
     }
 
-    return result;
+
+// 状态更新
+
+
+    if(in_last) {
+        idx = 0;
+        first_frame = 0;
+    }
+    if(!in_last && in_valid) {
+        idx++;
+    }
+
 }
 
