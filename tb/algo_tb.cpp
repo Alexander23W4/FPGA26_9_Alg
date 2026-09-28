@@ -1,72 +1,55 @@
 // =============================================================================
-//  algo_tb.cpp —— C 仿真验证 (8bit, 一拍一个像素)
+//  algo_tb.cpp —— 只验证 denosing.cpp (功能 + 反压握手时序)
 //
-//  接口标准 (见 algo_top.cpp 顶部):
-//      tdata 8bit / tvalid / tlast = EOL(行尾) / tuser = SOF(帧首)
+//  只编译 denosing.cpp + 本 TB, 不牵扯 algo_top.cpp / denose_top.cpp。
+//
+//  握手约定 (你新版的端口):
+//      in_valid + *in_ready   => 该拍输入被接收
+//      out_valid + out_ready  => 该拍输出被下游取走
 //
 //  验证内容:
-//    (1) 逐拍数据: 输出的每一拍和【优化前原算法】的参考模型逐拍比对
-//                  (data / last / user 三项都必须完全一致)
-//    (2) tuser = SOF: 每帧只出现一次, 在该帧第 1 个有效输出像素那一拍
-//    (3) tlast = EOL: 每 256 个输出像素一次(从帧首算起);
-//                     帧尾那拍本来就是行尾, 所以那里也是 1
-//    (4) 输入侧按标准构造: 每行最后一个像素 tlast=1, 每帧第一个像素 tuser=1
+//    (1) 功能: 被下游真正取走的输出序列, 应逐拍等于"优化前原算法"的参考模型
+//              的有效输出序列 (data / last / valid 三项)
+//    (2) 握手时序:
+//        · 输入不丢: 被接收的输入像素数 == 喂进去的总数
+//        · 反压保持: out_valid=1 且 out_ready=0 时, 下一拍输出必须原样保持
+//        · in_ready: 输出没被取走时不得再接收新输入 (不允许覆盖)
+//    (3) 帧标记: out_last 出现的位置和参考模型一致
 //
-//  说明: 这里调用 algo_top() 本身, 所以接口和数据一起验证。
-//        (algo_top 里是 for(;;); C 仿真时由 __SYNTHESIS__ 分支变成有界循环,
-//         拍数 = algo_top.h 里的 ALGO_TB_PIXELS。)
+//  输入 in_valid 和下游 out_ready 都按"周期性停顿"的方式驱动,
+//  以覆盖两侧都有停顿的情况。
 // =============================================================================
 
 #include <cstdio>
 #include <cstdlib>
-#include "../src/algo_top.h"
+#include <ap_int.h>
+#include "../src/denosing.h"
 
-#define IMG_W  ALGO_IMG_W
-#define IMG_H  ALGO_IMG_H
-#define IMG_N  (IMG_W * IMG_H)
-#define PIXELS ALGO_TB_PIXELS
+#define IMG_W 256
+#define IMG_H 256
+#define IMG_N (IMG_W * IMG_H)
+#define FRAMES 4
+#define NPIX (FRAMES * IMG_N)
 
 #define CORNER_WEIGHT   1
 #define NEIGHBOR_WEIGHT 2
 #define SELF_WEIGHT     4
 
-// =============================================================================
-//  参考模型: 优化前的原写法 (515 队列 + 常量取模 %515)
-//  变量加 ref_ 前缀, 避免和 DUT 里的同名全局量冲突。
-// =============================================================================
-static int ref_idx = 0;
-static int ref_op_idx = 0;
-static int ref_first_frame = 1;
-static int ref_q[515] = { 0 };
-static int ref_rear_frame[257] = { 0 };
+// ---------------- 参考模型: 优化前的原写法 (515 队列 + 取模) ----------------
+static int ref_idx = 0, ref_op_idx = 0, ref_first_frame = 1;
+static int ref_q[515] = {0}, ref_rear_frame[257] = {0};
 
-static void ref_denoise(
-    ap8_t in_data,
-    int in_valid,
-    int in_last,
-    ap8_t* out_data,
-    int* out_last,
-    int* out_valid
-)
+static void ref_denoise(ap8_t in_data, int in_valid, int in_last,
+                        ap8_t* out_data, int* out_last, int* out_valid)
 {
-    *out_last = 0;
-    *out_valid = 0;
-    *out_data = 0;
-
+    *out_last = 0; *out_valid = 0; *out_data = 0;
     if(in_valid){
         ref_q[ref_idx % 515] = in_data;
-        if(ref_idx >= 65279){
-            ref_rear_frame[ref_idx - 65279] = in_data;
-        }
-
+        if(ref_idx >= 65279) ref_rear_frame[ref_idx - 65279] = in_data;
         if(ref_idx >= 257 && ref_idx <= 513){
-            if(ref_idx == 257){
-                ref_op_idx = 0;
-            }
-            *out_valid = 1;
-            *out_data = ref_q[ref_op_idx++];
-        }
-        else if(ref_idx > 513 && ref_idx <= 65535){
+            if(ref_idx == 257) ref_op_idx = 0;
+            *out_valid = 1; *out_data = ref_q[ref_op_idx++];
+        } else if(ref_idx > 513 && ref_idx <= 65535){
             if(ref_idx % 256 > 1){
                 *out_valid = 1;
                 int sum =
@@ -79,126 +62,104 @@ static void ref_denoise(
                     + ref_q[(ref_idx + 515 - 2) % 515] * CORNER_WEIGHT
                     + ref_q[(ref_idx + 515 - 1) % 515] * NEIGHBOR_WEIGHT
                     + ref_q[ref_idx % 515] * CORNER_WEIGHT;
-
-                *out_data = (ap8_t)(sum >> 4);
-                ref_op_idx++;
+                *out_data = (ap8_t)(sum >> 4); ref_op_idx++;
+            } else {
+                if(ref_op_idx == ref_idx - 257){ *out_valid = 1; *out_data = ref_q[ref_op_idx++ % 515]; }
             }
-            else{
-                if(ref_op_idx == ref_idx - 257){
-                    *out_valid = 1;
-                    *out_data = ref_q[ref_op_idx++ % 515];
-                }
-            }
-        }
-        else {
-            if(!ref_first_frame){
-                if(ref_op_idx <= 65535){
-                    *out_valid = 1;
-                    if(ref_op_idx == 65535){
-                        *out_last = 1;
-                    }
-                    *out_data = ref_rear_frame[ref_op_idx - 65279];
-                    ref_op_idx++;
-                }
+        } else {
+            if(!ref_first_frame && ref_op_idx <= 65535){
+                *out_valid = 1;
+                if(ref_op_idx == 65535) *out_last = 1;
+                *out_data = ref_rear_frame[ref_op_idx - 65279]; ref_op_idx++;
             }
         }
     }
-
-    if(in_last) {
-        ref_idx = 0;
-        ref_first_frame = 0;
-    }
-    if(!in_last && in_valid) {
-        ref_idx++;
-    }
+    if(in_last) { ref_idx = 0; ref_first_frame = 0; }
+    if(!in_last && in_valid) ref_idx++;
 }
 
-// =============================================================================
-static ap_uint<8> img_in[PIXELS];
+// ---------------- 参考模型的"有效输出"序列 ----------------
+static ap_uint<8> ref_list_d[NPIX];
+static ap_uint<1> ref_list_l[NPIX];
+static int        ref_list_n = 0;
+
+static ap_uint<8> img_in[NPIX];
 
 int main()
 {
-    // ---------------- 1) 造输入: 每帧不同渐变 + 亮块 + 加性高斯噪声 ----------------
+    // ---- 造输入 ----
     srand(20260928);
-    for (int i = 0; i < PIXELS; i++) {
-        int f = i / IMG_N;
-        int p = i % IMG_N;
-        int r = p / IMG_W;
-        int c = p % IMG_W;
+    for (int i = 0; i < NPIX; i++) {
+        int f = i / IMG_N, p = i % IMG_N, r = p / IMG_W, c = p % IMG_W;
         int v = 60 + ((r + c + f * 7) % 40);
         if (r >= 96 && r < 160 && c >= 96 && c < 160) v = 200;
-        int n = ((rand() % 21) - 10) + ((rand() % 21) - 10) + ((rand() % 21) - 10);
-        v += n;
-        if (v < 0)   v = 0;
+        v += ((rand() % 21) - 10) + ((rand() % 21) - 10) + ((rand() % 21) - 10);
+        if (v < 0) v = 0;
         if (v > 255) v = 255;
         img_in[i] = (ap_uint<8>)v;
     }
 
-    // ---------------- 2) 按接口标准喂进去 ----------------
-    hls::stream<axis_t> s_axis("s_axis");
-    hls::stream<axis_t> m_axis("m_axis");
+    // ---- 逐拍仿真 ----
+    int  in_fed = 0, in_taken = 0, out_taken = 0;
+    int  bad_data = 0, bad_last = 0, first_bad = -1;
+    int  bad_hold = 0, bad_ovr = 0;      // 反压保持 / 覆盖检查
+    int  prev_out_valid = 0; ap_uint<8> prev_out_d = 0; ap_uint<1> prev_out_l = 0;
+    int  cyc = 0;
 
-    for (int i = 0; i < PIXELS; i++) {
-        axis_t x;
-        x.data = img_in[i];
-        x.last = ((i % IMG_W) == (IMG_W - 1)) ? 1 : 0;   // EOL: 每行最后一个像素
-        x.user = ((i % IMG_N) == 0) ? 1 : 0;             // SOF: 每帧第一个像素
-        s_axis.write(x);
-    }
+    while (out_taken < ref_list_n || in_fed < NPIX) {
+        // 输入: 周期性停顿 (每 5 拍停 1 拍)
+        int drive_valid = ((cyc % 5) != 4) ? 1 : 0;
+        if (in_fed >= NPIX) drive_valid = 0;
+        // 下游: 周期性反压 (每 7 拍停 1 拍)
+        int out_ready = ((cyc % 7) != 6) ? 1 : 0;
 
-    // ---------------- 3) 跑 DUT ----------------
-    algo_top(s_axis, m_axis);
+        ap8_t in_d = 0; int in_l = 0;
+        if (drive_valid) { in_d = img_in[in_fed]; in_l = ((in_fed % IMG_N) == (IMG_N - 1)) ? 1 : 0; }
 
-    // ---------------- 4) 收输出, 逐拍和参考模型比对 ----------------
-    int bad_data = 0, bad_last = 0, bad_user = 0;
-    int first_bad = -1;
-    int tuser_cnt = 0, tlast_cnt = 0;
-    int m_in_frame = 0;              // 帧内有效输出像素序号 (0-based)
+        int in_ready = 0, out_valid = 0, out_last = 0; ap8_t out_d = 0;
+        denoise(in_d, drive_valid, in_l, &in_ready, out_ready, &out_d, &out_last, &out_valid);
 
-    // denoise() 的前 257 拍没有输出(启动阶段), 包装层不发这些拍
-    //   => 输出拍数 = PIXELS - 257, 且第 j 拍对应输入第 (j + 257) 拍。
-    const int SKIP   = 257;
-    const int NB_OUT = PIXELS - SKIP;
-
-    for (int j = 0; j < NB_OUT; j++) {
-        axis_t x = m_axis.read();
-        int i = j + SKIP;                    // 对应的输入像素序号
-
-        ap8_t rd; int rl, rv;
-        ref_denoise(img_in[i], 1, ((i % IMG_N) == (IMG_N - 1)) ? 1 : 0,
-                    &rd, &rl, &rv);
-
-        // (1) 数据逐拍比对
-        if ((int)x.data != (int)rd) {
-            if (first_bad < 0) first_bad = i;
-            bad_data++;
+        // 反压保持检查: 上一拍给了有效输出但下游没收, 这一拍的输出必须原样
+        if (prev_out_valid == 1) {
+            if (!(out_valid == 1 && out_d == prev_out_d && out_last == prev_out_l)) bad_hold++;
+            if (in_ready == 1 && drive_valid == 1) bad_ovr++;   // 不许在输出未取走时收新输入
         }
 
-        // (2)(3) 期望的 TUSER / TLAST (按输出像素在帧内的位置)
-        int exp_user = 0, exp_last = 0;
-        if (rv) {
-            if (m_in_frame == 0)                    exp_user = 1;   // SOF
-            if ((m_in_frame % IMG_W) == (IMG_W - 1)) exp_last = 1;   // EOL
-            m_in_frame = (m_in_frame + 1) % IMG_N;
+        // 输入握手 => 像素被接收, 同时推进参考模型
+        if (drive_valid && in_ready) {
+            ap8_t rd; int rl, rv;
+            ref_denoise(in_d, 1, in_l, &rd, &rl, &rv);
+            if (rv) { ref_list_d[ref_list_n] = rd; ref_list_l[ref_list_n] = (ap_uint<1>)rl; ref_list_n++; }
+            in_fed++; in_taken++;
         }
-        if ((int)x.user != exp_user) bad_user++;
-        if ((int)x.last != exp_last) bad_last++;
-        if (x.user) tuser_cnt++;
-        if (x.last) tlast_cnt++;
+
+        // 输出握手 => 输出被取走, 与参考序列比对
+        if (out_valid && out_ready) {
+            if (out_taken < ref_list_n) {
+                if ((int)out_d != (int)ref_list_d[out_taken]) { if (first_bad < 0) first_bad = out_taken; bad_data++; }
+                if ((int)out_last != (int)ref_list_l[out_taken]) bad_last++;
+            } else bad_data++;
+            out_taken++;
+        }
+
+        prev_out_valid = (out_valid && !out_ready) ? 1 : 0;
+        prev_out_d = out_d; prev_out_l = (ap_uint<1>)out_last;
+        cyc++;
+        if (cyc > 40 * NPIX) { printf("[tb] 仿真超时, 提前退出\n"); break; }
     }
 
-    // ---------------- 5) 结果 ----------------
-    printf("\n=============== algo_top 接口 + 算法 C 仿真 ===============\n");
-    printf("拍数            : %d\n", PIXELS);
+    printf("\n============ denosing.cpp 反压版 仿真 ============\n");
+    printf("拍数(周期)      : %d\n", cyc);
+    printf("喂入像素        : %d  (共 %d)\n", in_taken, NPIX);
+    printf("取走输出        : %d  (参考有效输出 %d)\n", out_taken, ref_list_n);
     printf("(1) data  差异  : %d\n", bad_data);
-    if (first_bad >= 0) printf("    首个差异在第 %d 拍\n", first_bad);
-    printf("(2) tuser 差异  : %d     (SOF, 期望每帧 1 次)\n", bad_user);
-    printf("(3) tlast 差异  : %d     (EOL, 期望每行 1 次)\n", bad_last);
-    printf("    tuser 出现次数: %d\n", tuser_cnt);
-    printf("    tlast 出现次数: %d\n", tlast_cnt);
+    if (first_bad >= 0) printf("    首个差异在第 %d 个输出\n", first_bad);
+    printf("    last  差异  : %d\n", bad_last);
+    printf("(2) 反压保持错  : %d   (输出未被取走时没有原样保持)\n", bad_hold);
+    printf("    反压期收输入: %d   (输出未取走却收了新输入 => 会丢数据)\n", bad_ovr);
+    printf("(3) 输出数一致  : %s\n", (out_taken == ref_list_n) ? "YES" : "NO");
     printf("RESULT: %s\n",
-           ((bad_data | bad_user | bad_last) == 0) ? "PASS" : "FAIL");
-    printf("==========================================================\n\n");
-
+           ((bad_data|bad_last|bad_hold|bad_ovr)==0 && out_taken==ref_list_n && in_taken==NPIX) ? "PASS" : "FAIL");
+    printf("==================================================\n\n");
     return 0;
 }

@@ -66,6 +66,9 @@ ap_uint<8> rear_frame[257] = { 0 }; // 65279-65535
 //   它始终等于 idx % 515, 但用"回绕计数"代替取模 —— 这样 q[...] 里那 10 处
 //   常量取模 %515 就全部不需要了 (515 不是 2 的幂, 每处都会被综合成一个除法阵列)。
 int wr = 0;
+ap_uint<8> pending_data = 0;
+int pending_last = 0;
+int pending_valid = 0;
 
 void denoise(
     ap8_t in_data,
@@ -80,14 +83,21 @@ void denoise(
 )
 {
 
-// 默认输入可接收, 输出无效。
-    *in_ready = 1;
-    *out_last = 0;
-    *out_valid = 0;
-    *out_data = 0;
+    // Present the registered output until the downstream side accepts it.
+    *out_data = pending_data;
+    *out_last = pending_last;
+    *out_valid = pending_valid;
+    *in_ready = !pending_valid || out_ready;
+
+    if(pending_valid && out_ready){
+        pending_valid = 0;
+        pending_last = 0;
+    }
 
     int has_output = 0;
     int output_idx = op_idx;
+    ap_uint<8> next_data = 0;
+    int next_last = 0;
     int r514 = wr - 514; if(r514 < 0) r514 += 515;
     int r513 = wr - 513; if(r513 < 0) r513 += 515;
     int r512 = wr - 512; if(r512 < 0) r512 += 515;
@@ -112,12 +122,10 @@ void denoise(
         has_output = 1;
     }
 
-    if(has_output){
-        *in_ready = out_ready;
-        if(in_valid){
-            *out_valid = 1;
+    if(in_valid && *in_ready){
+        if(has_output){
             if(idx >= 257 && idx <= 513){
-                *out_data = q[output_idx];
+                next_data = q[output_idx];
             }
             else if(idx > 513 && idx <= 65535){
                 if((idx & 255) > 1){
@@ -132,23 +140,24 @@ void denoise(
                         + q[r1]   * NEIGHBOR_WEIGHT
                         + in_data * CORNER_WEIGHT;
 
-                    *out_data = (ap8_t)(sum >> 4);
+                    next_data = (ap8_t)(sum >> 4);
                 }
                 else{
-                    *out_data = q[r257];
+                    next_data = q[r257];
                 }
             }
             else{
-                *out_data = rear_frame[output_idx - 65279];
+                next_data = rear_frame[output_idx - 65279];
                 if(output_idx == 65535){
-                    *out_last = 1;
+                    next_last = 1;
                 }
             }
-        }
-    }
 
-    // 改变输入或输出状态前必须完成对应的 ready/valid 握手。
-    if(in_valid && *in_ready){
+            pending_data = next_data;
+            pending_last = next_last;
+            pending_valid = 1;
+        }
+
         q[wr] = in_data;
         if(idx >= 65279){
             rear_frame[idx - 65279] = in_data;
