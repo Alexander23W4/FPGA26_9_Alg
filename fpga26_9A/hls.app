@@ -2,6 +2,8 @@
 <project xmlns="com.autoesl.autopilot.project" top="algo_top">
   <files>
     <file name="src/algo_top.cpp" sc="0" tb="false" cflags="" csimflags=""/>
+    <file name="src/denosing.cpp" sc="0" tb="false" cflags="" csimflags=""/>
+    <file name="src/contour_ext.cpp" sc="0" tb="false" cflags="" csimflags=""/>
   </files>
   <solutions>
     <solution name="solution1" status="active"/>

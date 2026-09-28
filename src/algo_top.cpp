@@ -51,8 +51,8 @@ void algo_top(hls::stream<axis8_t> &s_axis,
         out.strb = denoise_out_valid;
         out.last = denoise_out_last;
         out.user = 0;   // 这个user我不知道axi_stream里面定义的是什么
-        out.id   = 0;   // 同上
-        out.dest = 0;
+        // out.id   = 0;   // 同上
+        // out.dest = 0;
 
         m_axis.write(out);
     }
